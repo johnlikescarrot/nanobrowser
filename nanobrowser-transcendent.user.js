@@ -10,8 +10,6 @@
 // @grant        GM_getValue
 // @grant        GM_registerMenuCommand
 // @connect      api.openai.com
-// @connect      api.anthropic.com
-// @connect      api.google.com
 // @run-at       document-end
 // ==/UserScript==
 
@@ -195,7 +193,7 @@ RESPONSE FORMAT: You must ALWAYS respond with valid JSON:
         const wrapper = document.createElement('div');
         wrapper.id = 'nano-container';
         // SECURITY FIX: Use closed shadow root to prevent page hijacking
-        const shadow = wrapper.attachShadow({ mode: 'open' });
+        const shadow = wrapper.attachShadow({ mode: 'closed' });
 
         const styleTag = document.createElement('style');
         styleTag.textContent = STYLES;
