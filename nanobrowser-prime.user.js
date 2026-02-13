@@ -1,13 +1,11 @@
 // ==UserScript==
 // @name         Nanobrowser Prime
 // @namespace    http://tampermonkey.net/
-// @version      0.2.0
+// @version      0.2.1
 // @description  Hardened Standalone AI Web Agent - Production Ready
 // @author       Jules
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
-// @grant        GM_setValue
-// @grant        GM_getValue
 // @require      https://unpkg.com/react@18.2.0/umd/react.production.min.js#sha256=S0lp+k7zWUMk2ixteM6HZvu8L9Eh//OVrt+ZfbCpmgY=
 // @require      https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js#sha256=IXWO0ITNDjfnNXIu5POVfqlgYoop36bDzhodR6LW5Pc=
 // ==/UserScript==
@@ -19,16 +17,19 @@
     // --- SECURITY GUARDRAILS ---
     const SecurityGuardrails = {
         PATTERNS: [
-            { pattern: /ignore previous instructions/gi, replacement: '[BLOCKED_OVERRIDE_ATTEMPT]' },
-            { pattern: /your new task is/gi, replacement: '[BLOCKED_TASK_INJECTION]' }
+            { pattern: /ignore (all )?previous instructions/gi, replacement: '[BLOCKED_OVERRIDE_ATTEMPT]' },
+            { pattern: /forget (all )?instructions/gi, replacement: '[BLOCKED_OVERRIDE_ATTEMPT]' },
+            { pattern: /disregard (all )?(above|previous) (instructions|tasks)/gi, replacement: '[BLOCKED_OVERRIDE_ATTEMPT]' },
+            { pattern: /(your new task is|you are now|actually you must)/gi, replacement: '[BLOCKED_TASK_INJECTION]' }
         ],
         sanitize: (text) => {
             if (!text) return "";
-            let sanitized = text;
+            let result = text.normalize('NFC');
+            result = result.replace(/[\u200B-\u200D\uFEFF]/g, '');
             SecurityGuardrails.PATTERNS.forEach(p => {
-                sanitized = sanitized.replace(p.pattern, p.replacement);
+                result = result.replace(p.pattern, p.replacement);
             });
-            return sanitized;
+            return result;
         }
     };
 
@@ -37,7 +38,7 @@
         getUniqueSelector: (el) => {
             if (el.id) return '#' + el.id;
             const path = [];
-            while (el.nodeType === Node.ELEMENT_NODE) {
+            while (el && el.nodeType === Node.ELEMENT_NODE) {
                 let selector = el.nodeName.toLowerCase();
                 if (el.parentNode) {
                     const siblings = Array.from(el.parentNode.children).filter(e => e.nodeName === el.nodeName);
@@ -65,7 +66,7 @@
             if (interactiveTags.has(el.tagName)) return true;
             const style = window.getComputedStyle(el);
             if (style.cursor === 'pointer') return true;
-            if (el.hasAttribute('onclick') || el.getAttribute('role') === 'button' || el.getAttribute('contenteditable') === 'true') return true;
+            if (el.hasAttribute('onclick') || el.getAttribute('role') === 'button' || el.contentEditable === 'true') return true;
             return false;
         },
         scan: () => {
@@ -118,6 +119,11 @@
                 el.dispatchEvent(new Event('input', { bubbles: true }));
                 el.dispatchEvent(new Event('change', { bubbles: true }));
                 return true;
+            } else if (el && el.contentEditable === 'true') {
+                el.textContent = text;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+                return true;
             }
             return false;
         }
@@ -129,7 +135,7 @@
     const AssistantUI = () => {
         const [isExpanded, setIsExpanded] = useState(false);
         const [task, setTask] = useState("");
-        const [logs, setLogs] = useState(["Nanobrowser Prime 0.2.0: Secure Enclave Active."]);
+        const [logs, setLogs] = useState(["Nanobrowser Prime 0.2.1: Secure Enclave Active."]);
         const [isProcessing, setIsProcessing] = useState(false);
 
         const runTask = async () => {
@@ -142,11 +148,9 @@
             const elements = DOMScanner.scan();
             setLogs(prev => [...prev, `System: Scanning page...`]);
 
-            // Mock reasoning step
             setTimeout(() => {
                 setLogs(prev => [...prev, `System: Identified ${elements.length} interactive components.`]);
 
-                // Demo Navigator usage if elements exist
                 if (elements.length > 0) {
                    const topElement = elements[0];
                    setLogs(prev => [...prev, `System: Action suggested: click on [${topElement.index}] ${topElement.tagName}.`]);
@@ -192,7 +196,8 @@
                         key: 'i', value: task, onChange: (e) => setTask(e.target.value),
                         onKeyDown: (e) => e.key === 'Enter' && runTask(),
                         placeholder: "Ask securely...",
-                        style: { flex: 1, backgroundColor: 'rgba(255,255,255,0.05)', border: 'none', borderRadius: '12px', padding: '10px', color: 'white', outline: 'none' }
+                        className: 'nano-input',
+                        style: { flex: 1, backgroundColor: 'rgba(255,255,255,0.05)', border: '1px solid transparent', borderRadius: '12px', padding: '10px', color: 'white', outline: 'none' }
                     }),
                     React.createElement('button', {
                         key: 'b',
@@ -201,7 +206,11 @@
                         disabled: isProcessing,
                         style: { backgroundColor: isProcessing ? '#475569' : '#2563eb', border: 'none', borderRadius: '12px', padding: '0 15px', color: 'white', cursor: isProcessing ? 'default' : 'pointer' }
                     }, isProcessing ? "..." : "Go")
-                ])
+                ]),
+                // CSS for focus ring
+                React.createElement('style', { key: 's' }, `
+                    .nano-input:focus { border-color: #3b82f6 !important; box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.5); }
+                `)
             ])
         ]);
     };
