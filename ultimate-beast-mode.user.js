@@ -21,7 +21,7 @@
     const dedent = (str) => str.replace(/^ +/gm, '').trim();
     const CONFIG = {
         DEBUG: false,
-        MAX_STEPS: 20,
+        MAX_STEPS: 25,
         WAIT_BETWEEN_STEPS: 1500,
         SCROLL_AMOUNT: 600,
         MAX_HISTORY_MESSAGES: 12,
@@ -94,10 +94,11 @@
             while (node = walker.nextNode()) {
                 const attrs = {};
                 for (const attr of node.attributes) attrs[attr.name] = attr.value;
-                const hash = `${node.tagName}-${node.innerText.substring(0, 20)}`;
+                const text = node.innerText?.trim() || node.value || node.placeholder || node.getAttribute('aria-label') || '';
+                const hash = `${node.tagName}-${text.substring(0, 30)}`;
                 elements.push({
                     element: node, index: index++, tagName: node.tagName.toLowerCase(),
-                    text: node.innerText.trim(), attributes: attrs, depth: 0,
+                    text: text, attributes: attrs, depth: 0,
                     isNew: !seenHashes.has(hash), hash
                 });
             }
@@ -126,20 +127,21 @@
                     timeout: CONFIG.API_TIMEOUT,
                     onload: (response) => {
                         try {
-                            if (response.status < 200 || response.status >= 300) throw new Error(`API Error ${response.status}`);
+                            if (response.status < 200 || response.status >= 300) throw new Error(`API Error ${response.status}: ${response.responseText.substring(0, 100)}`);
                             const data = JSON.parse(response.responseText);
                             const content = this.extractContent(provider, data);
                             const repaired = JSONRepair.jsonrepair(content);
                             resolve(JSON.parse(repaired));
-                        } catch (e) { reject(new Error(`LLM Error: ${e.message}`)); }
+                        } catch (e) { reject(new Error(`LLM Failure: ${e.message}`)); }
                     },
-                    ontimeout: () => reject(new Error('Timed Out')),
-                    onerror: (e) => reject(new Error('Connection Failed'))
+                    ontimeout: () => reject(new Error('Neural Link Timeout')),
+                    onerror: (e) => reject(new Error('Neural Gateway Failed'))
                 });
             });
         }
 
         static getProviderConfig(provider, model, apiKey, messages, customUrl) {
+            // Merge consecutive same-role messages
             const mergedMessages = messages.reduce((acc, msg) => {
                 if (acc.length > 0 && acc[acc.length - 1].role === msg.role) acc[acc.length - 1].content += "\n\n" + msg.content;
                 else acc.push({ role: msg.role, content: msg.content });
@@ -160,14 +162,21 @@
                 case 'gemini': return {
                     url: `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
                     headers: { 'Content-Type': 'application/json' },
-                    body: { system_instruction: { parts: [{ text: mergedMessages.find(m => m.role === 'system')?.content || '' }] }, contents: mergedMessages.filter(m => m.role !== 'system').map(m => ({ role: m.role === 'user' ? 'user' : 'model', parts: [{ text: m.content }] })), generationConfig: { responseMimeType: "application/json", temperature: 0.1 } }
+                    body: {
+                        system_instruction: { parts: [{ text: mergedMessages.find(m => m.role === 'system')?.content || '' }] },
+                        contents: mergedMessages.filter(m => m.role !== 'system').map(m => ({
+                            role: m.role === 'assistant' ? 'model' : 'user',
+                            parts: [{ text: m.content }]
+                        })),
+                        generationConfig: { responseMimeType: "application/json", temperature: 0.1 }
+                    }
                 };
                 case 'custom': return {
                     url: customUrl || 'https://api.openai.com/v1/chat/completions',
                     headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
                     body: { model, messages: mergedMessages, response_format: { type: "json_object" } }
                 };
-                default: throw new Error('Unknown Provider');
+                default: throw new Error(`Unknown Engine: ${provider}`);
             }
         }
 
@@ -176,7 +185,7 @@
             if (provider === 'openai' || provider === 'custom') text = data?.choices?.[0]?.message?.content;
             else if (provider === 'anthropic') text = data?.content?.[0]?.text;
             else if (provider === 'gemini') text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-            if (!text) throw new Error("Empty Response");
+            if (!text) throw new Error("Null Response");
             const start = text.indexOf('{'), end = text.lastIndexOf('}');
             return (start !== -1 && end !== -1) ? text.substring(start, end + 1) : text;
         }
@@ -197,7 +206,10 @@
                     const state = JSON.parse(saved);
                     this.goal = state.goal; this.stepCount = state.stepCount; this.history = state.history;
                     GM_setValue('beast_active_state', null);
-                    setTimeout(() => { this.ui.log('RESUMING AUTONOMOUS MISSION...', 'system'); this.run(this.goal, true).finally(() => this.isRestoring = false); }, 1000);
+                    setTimeout(() => {
+                        this.ui.log('RESUMING AUTONOMOUS MISSION...', 'system');
+                        this.run(this.goal, true).finally(() => this.isRestoring = false);
+                    }, 1000);
                 } else this.isRestoring = false;
             } catch (e) { this.isRestoring = false; }
         }
@@ -230,7 +242,7 @@
                     const messages = [{ role: 'system', content: this.getSystemPrompt() }, ...this.history, { role: 'user', content: contextMessage }];
 
                     const p = GM_getValue('beast_provider', 'openai'), k = GM_getValue(`beast_key_${p}`, ''), m = GM_getValue(`beast_model_${p}`, CONFIG.DEFAULT_MODELS[p]), u = GM_getValue('beast_custom_url', '');
-                    if (!k && p !== 'custom') throw new Error('Auth Required');
+                    if (!k && p !== 'custom') throw new Error('API Key Required');
 
                     const response = await BeastLLM.call(p, m, k, messages, u);
                     if (response.thought) this.ui.log(response.thought, 'beast');
@@ -249,23 +261,35 @@
         async performAction(name, args, elements) {
             if (!args) return 'FAILURE';
             switch (name) {
-                case 'click_element':
+                case 'click_element': {
                     const cel = elements.find(e => e.index === Number(args.index));
                     if (cel) { cel.element.click(); this.ui.log(`STRIKE: [${args.index}]`, 'system'); return 'SUCCESS'; }
-                    return 'FAILURE';
-                case 'input_text':
+                    this.ui.log(`MISS: [${args.index}] not found`, 'system'); return 'FAILURE';
+                }
+                case 'input_text': {
                     const iel = elements.find(e => e.index === Number(args.index));
-                    if (iel) { iel.element.value = args.text; iel.element.dispatchEvent(new Event('input', { bubbles: true })); iel.element.dispatchEvent(new Event('change', { bubbles: true })); this.ui.log(`STREAM: [${args.index}]`, 'system'); return 'SUCCESS'; }
-                    return 'FAILURE';
-                case 'scroll':
-                    window.scrollBy(0, args.direction === 'up' ? -CONFIG.SCROLL_AMOUNT : CONFIG.SCROLL_AMOUNT); return 'SUCCESS';
-                case 'navigate':
+                    if (iel) {
+                        if (iel.element.isContentEditable) iel.element.innerText = args.text;
+                        else iel.element.value = args.text;
+                        iel.element.dispatchEvent(new Event('input', { bubbles: true }));
+                        iel.element.dispatchEvent(new Event('change', { bubbles: true }));
+                        this.ui.log(`STREAM: [${args.index}]`, 'system'); return 'SUCCESS';
+                    }
+                    this.ui.log(`MISS: [${args.index}] not found`, 'system'); return 'FAILURE';
+                }
+                case 'scroll': {
+                    const dir = args.direction === 'up' ? 'up' : 'down';
+                    window.scrollBy(0, dir === 'up' ? -CONFIG.SCROLL_AMOUNT : CONFIG.SCROLL_AMOUNT);
+                    this.ui.log(`SCROLL: ${dir.toUpperCase()}`, 'system'); return 'SUCCESS';
+                }
+                case 'navigate': {
                     if (Guardrails.validateUrl(args.url)) {
                         this.ui.log(`JUMP: ${args.url}`, 'system');
                         GM_setValue('beast_active_state', JSON.stringify({ goal: this.goal, stepCount: this.stepCount, history: this.history }));
                         window.location.href = args.url; return 'NAVIGATING';
                     }
-                    return 'FAILURE';
+                    this.ui.log('BLOCK: Invalid URL Protocol', 'system'); return 'FAILURE';
+                }
                 default: return 'FAILURE';
             }
         }
@@ -281,17 +305,24 @@
         initStyles() {
             const s = document.createElement('style');
             s.textContent = dedent(`
-                :host { --bg: rgba(6, 11, 22, 0.9); --border: rgba(25, 194, 255, 0.3); --accent: #19c2ff; --text: #f0f9ff; --glow: 0 0 20px rgba(25, 194, 255, 0.2); --gradient: linear-gradient(135deg, #19c2ff, #764ba2); }
-                #beast-sidebar { position: fixed; top: 20px; right: 20px; width: 440px; height: 740px; background: var(--bg); backdrop-filter: blur(20px); border: 1px solid var(--border); border-radius: 32px; box-shadow: var(--glow); display: flex; flex-direction: column; z-index: 2147483647; overflow: hidden; font-family: sans-serif; color: var(--text); }
+                :host { --bg: rgba(6, 11, 22, 0.95); --border: rgba(25, 194, 255, 0.3); --accent: #19c2ff; --text: #f0f9ff; --glow: 0 0 20px rgba(25, 194, 255, 0.2); --gradient: linear-gradient(135deg, #19c2ff, #764ba2); }
+                #beast-sidebar { position: fixed; top: 20px; right: 20px; width: 440px; height: 740px; background: var(--bg); backdrop-filter: blur(20px); border: 1px solid var(--border); border-radius: 32px; box-shadow: var(--glow); display: flex; flex-direction: column; z-index: 2147483647; overflow: hidden; font-family: 'Inter', system-ui, sans-serif; color: var(--text); }
                 header { padding: 24px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; background: rgba(255,255,255,0.02); cursor: grab; }
-                #console { flex: 1; overflow-y: auto; padding: 24px; font-family: monospace; font-size: 12px; display: flex; flex-direction: column; gap: 12px; }
-                .log-entry { padding: 8px 12px; border-radius: 8px; background: rgba(255,255,255,0.03); }
-                .log-beast { color: var(--accent); border-left: 3px solid #764ba2; }
+                h1 { margin: 0; font-size: 14px; font-weight: 900; letter-spacing: 0.4em; color: var(--accent); }
+                #console { flex: 1; overflow-y: auto; padding: 24px; font-family: 'Fira Code', monospace; font-size: 12px; display: flex; flex-direction: column; gap: 12px; }
+                .log-entry { padding: 10px 16px; border-radius: 8px; background: rgba(255,255,255,0.03); border-left: 3px solid transparent; }
+                .log-beast { color: var(--accent); border-left-color: #764ba2; background: rgba(118, 75, 162, 0.1); }
+                .log-system { color: #94a3b8; font-size: 11px; text-transform: uppercase; }
                 #input-area { padding: 24px; border-top: 1px solid var(--border); background: rgba(0,0,0,0.4); }
                 input { flex: 1; background: rgba(255,255,255,0.05); border: 1px solid var(--border); border-radius: 12px; padding: 12px; color: #fff; outline: none; }
-                button { background: var(--accent); border: none; border-radius: 12px; padding: 10px 20px; color: #000; font-weight: bold; cursor: pointer; }
-                #settings-panel { position: absolute; inset: 0; background: #070c16; display: none; flex-direction: column; padding: 24px; gap: 16px; z-index: 100; }
-                .btn-icon { background: none; border: none; color: #94a3b8; cursor: pointer; font-size: 20px; }
+                button { background: var(--accent); border: none; border-radius: 12px; padding: 10px 24px; color: #000; font-weight: 900; cursor: pointer; transition: 0.3s; }
+                button:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(25, 194, 255, 0.4); }
+                #settings-panel { position: absolute; inset: 0; background: #070c16; display: none; flex-direction: column; padding: 32px; gap: 20px; z-index: 100; overflow-y: auto; }
+                .btn-icon { background: none; border: none; color: #94a3b8; cursor: pointer; font-size: 20px; transition: 0.3s; }
+                .btn-icon:hover { color: var(--accent); transform: scale(1.1); }
+                #close-ui:hover { color: #ef4444; }
+                label { font-size: 10px; font-weight: 900; color: var(--accent); text-transform: uppercase; letter-spacing: 0.2em; }
+                select, .settings-input { background: rgba(255,255,255,0.05); border: 1px solid var(--border); border-radius: 12px; padding: 14px; color: #fff; outline: none; }
             `);
             this.shadow.appendChild(s);
         }
@@ -299,16 +330,27 @@
         initDOM() {
             const sidebar = document.createElement('div'); sidebar.id = 'beast-sidebar';
             sidebar.innerHTML = dedent(`
-                <header><h1>BEAST MODE v1.4.0</h1><div style="display:flex; gap:10px;"><button id="toggle-settings" class="btn-icon">⚙️</button><button id="close-ui" class="btn-icon">✕</button></div></header>
-                <div id="console"></div>
+                <header><h1>BEAST MODE</h1><div style="display:flex; gap:10px;"><button id="toggle-settings" class="btn-icon">⚙️</button><button id="close-ui" class="btn-icon">✕</button></div></header>
+                <div id="console"><div class="log-entry log-system">SYSTEM READY. AWAITING DIRECTIVES.</div></div>
                 <div id="input-area"><div style="display:flex; gap:10px;"><input type="text" id="goal-input" placeholder="Objective..."><button id="summon-btn">Summon</button><button id="stop-btn" style="background:#ef4444; color:#fff; display:none;">Stop</button></div></div>
                 <div id="settings-panel">
-                    <div style="display:flex; justify-content:space-between;"><h2>INTERFACE</h2><button id="close-settings" class="btn-icon">✕</button></div>
-                    <label>Neural Engine</label><select id="provider-select"><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="gemini">Google</option><option value="custom">Custom</option></select>
-                    <div id="custom-fields" style="display:none;"><label>Gateway</label><input type="text" id="custom-url"></div>
-                    <label>Encrypted Key</label><input type="password" id="api-key">
-                    <label>Model Matrix</label><input type="text" id="model-id">
-                    <button id="commit-btn" style="width:100%;">INITIALIZE CORE</button>
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <h2 style="margin:0; font-size: 24px; font-weight: 900;">INTERFACE</h2>
+                        <button id="close-settings" class="btn-icon">✕</button>
+                    </div>
+                    <div style="display:flex; flex-direction:column; gap:15px;">
+                        <label>Neural Engine</label>
+                        <select id="provider-select">
+                            <option value="openai">OpenAI</option>
+                            <option value="anthropic">Anthropic</option>
+                            <option value="gemini">Google</option>
+                            <option value="custom">Custom</option>
+                        </select>
+                        <div id="custom-fields" style="display:none; flex-direction:column; gap:10px;"><label>Gateway</label><input type="text" id="custom-url" class="settings-input"></div>
+                        <label>Encrypted Key</label><input type="password" id="api-key" class="settings-input">
+                        <label>Model Matrix</label><input type="text" id="model-id" class="settings-input">
+                        <button id="commit-btn" style="width:100%; padding:18px; background:var(--gradient); color:#fff; margin-top:20px;">INITIALIZE CORE</button>
+                    </div>
                 </div>`);
             this.shadow.appendChild(sidebar);
             this.initBindings(sidebar);
@@ -318,9 +360,17 @@
             const panel = this.shadow.querySelector('#settings-panel');
             this.shadow.querySelector('#toggle-settings').onclick = () => { panel.style.display = 'flex'; this.loadSettings(); };
             this.shadow.querySelector('#close-settings').onclick = () => panel.style.display = 'none';
-            this.shadow.querySelector('#close-ui').onclick = () => { if (confirm('Terminate neural link?')) { if (this.onClose) this.onClose(); this.container.remove(); } };
+            this.shadow.querySelector('#close-ui').onclick = () => {
+                if (confirm('Sever Neural Link? All mission data will be lost.')) {
+                    if (this.onClose) this.onClose();
+                    this.container.remove();
+                }
+            };
             this.shadow.querySelector('#commit-btn').onclick = () => { this.saveSettings(); panel.style.display = 'none'; };
-            this.shadow.querySelector('#provider-select').onchange = (e) => { this.shadow.querySelector('#custom-fields').style.display = e.target.value === 'custom' ? 'block' : 'none'; this.syncProviderUI(); };
+            this.shadow.querySelector('#provider-select').onchange = (e) => {
+                this.shadow.querySelector('#custom-fields').style.display = e.target.value === 'custom' ? 'flex' : 'none';
+                this.syncProviderUI();
+            };
             this.initDraggable(sidebar);
         }
 
@@ -332,7 +382,7 @@
         loadSettings() {
             const p = GM_getValue('beast_provider', 'openai');
             this.shadow.querySelector('#provider-select').value = p;
-            this.shadow.querySelector('#custom-fields').style.display = p === 'custom' ? 'block' : 'none';
+            this.shadow.querySelector('#custom-fields').style.display = p === 'custom' ? 'flex' : 'none';
             this.syncProviderUI();
         }
 
@@ -358,15 +408,31 @@
         }
 
         initDraggable(el) {
-            let p1 = 0, p2 = 0, p3 = 0, p4 = 0;
+            let deltaX = 0, deltaY = 0, startX = 0, startY = 0;
             const h = this.shadow.querySelector('header');
-            h.onmousedown = (e) => { e.preventDefault(); p3 = e.clientX; p4 = e.clientY; document.onmouseup = () => { document.onmouseup = null; document.onmousemove = null; }; document.onmousemove = (e) => { e.preventDefault(); p1 = p3 - e.clientX; p2 = p4 - e.clientY; p3 = e.clientX; p4 = e.clientY; el.style.top = (el.offsetTop - p2) + "px"; el.style.left = (el.offsetLeft - p1) + "px"; }; };
+            const onMouseMove = (e) => {
+                deltaX = startX - e.clientX; deltaY = startY - e.clientY;
+                startX = e.clientX; startY = e.clientY;
+                el.style.top = (el.offsetTop - deltaY) + "px";
+                el.style.left = (el.offsetLeft - deltaX) + "px";
+            };
+            const onMouseUp = () => {
+                document.removeEventListener('mousemove', onMouseMove);
+                document.removeEventListener('mouseup', onMouseUp);
+            };
+            h.addEventListener('mousedown', (e) => {
+                startX = e.clientX; startY = e.clientY;
+                document.addEventListener('mousemove', onMouseMove);
+                document.addEventListener('mouseup', onMouseUp);
+            });
         }
     }
 
     function init() {
         if (window.self !== window.top) return;
         const ui = new BeastUI(), agent = new BeastAgent(ui);
+        ui.onClose = () => { agent.isRunning = false; };
+
         const input = ui.shadow.querySelector('#goal-input');
         const execute = () => {
             const goal = input.value.trim();
