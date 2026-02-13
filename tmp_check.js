@@ -1,20 +1,3 @@
-// ==UserScript==
-// @name         Ultimate Transparent Thinking Beast Mode
-// @namespace    http://tampermonkey.net/
-// @version      1.4.0
-// @description  The most powerful autonomous AI web agent. Now with OpenAI-compatible vendor support and premium HUD UI.
-// @author       Jules
-// @match        *://*/*
-// @grant        GM_xmlhttpRequest
-// @grant        GM_setValue
-// @grant        GM_getValue
-// @connect      api.openai.com
-// @connect      api.anthropic.com
-// @connect      generativelanguage.googleapis.com
-// @connect      *
-// @require      https://cdn.jsdelivr.net/npm/jsonrepair@3.4.0/lib/umd/jsonrepair.js
-// ==/UserScript==
-
 (function() {
     'use strict';
 
