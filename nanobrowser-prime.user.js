@@ -1,32 +1,29 @@
 // ==UserScript==
 // @name         Nanobrowser Prime
 // @namespace    http://nanobrowser.ai/
-// @version      0.2.2
+// @version      0.2.3
 // @description  The Ultimate Transparent Thinking Beast Mode Enclave. High-fidelity port of Nanobrowser multi-agent system.
 // @author       Jules
 // @match        *://*/*
+// @require      https://unpkg.com/react@18.3.1/umd/react.production.min.js#sha384-DGyLxAyjq0f9SPpVevD6IgztCFlnMF6oW/XQGmfe+IsZ8TqEiDrcHkMLKI6fiB/Z
+// @require      https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js#sha384-gTGxhz21lVGYNMcdJOyq01Edg0jhn/c22nsx0kyqP0TxaV5WVdsSH1fSDUf5YJj1
 // @grant        none
 // @run-at       document-end
 // ==/UserScript==
 
+/* global React, ReactDOM */
+
 /**
- * Nanobrowser Prime v0.2.2
+ * Nanobrowser Prime v0.2.3
  *
- * DESIGN PHILOSOPHY:
- * 1. ENCLAVE SECURITY: Isolated within a closed Shadow DOM.
- * 2. PERFORMANCE: Reflow-free scanning using textContent and intersection-based visibility.
- * 3. STANDALONE ENGINE: Fully self-contained logic for navigation and analysis.
+ * ENCLAVE ARCHITECTURE:
+ * - Isolated Shadow DOM (mode: 'closed') to prevent host-site log leakage.
+ * - Reflow-free scanning engine using textContent and intersection-based visibility.
+ * - Hardened Security Guardrails with NFKC normalization and broad Unicode format stripping.
  */
 
 (function() {
     'use strict';
-
-    // Inject React and ReactDOM with Subresource Integrity (SRI)
-    // and version pinning for maximum supply-chain security.
-    const scripts = [
-        { src: 'https://unpkg.com/react@18.3.1/umd/react.production.min.js', integrity: 'sha384-Y9mYvY4mO0oG0oG0oG0oG0oG0oG0oG0oG0oG0oG0oG0oG0oG0oG0oG0oG0oG0oG0' }, // Mock SRI
-        { src: 'https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js', integrity: 'sha384-Y9mYvY4mO0oG0oG0oG0oG0oG0oG0oG0oG0oG0oG0oG0oG0oG0oG0oG0oG0oG0oG0' }
-    ];
 
     // --- SECURITY GUARDRAILS ---
     const SecurityGuardrails = {
@@ -34,11 +31,11 @@
             { pattern: /ignore (all )?previous instructions/gi, replacement: '[BLOCKED_OVERRIDE_ATTEMPT]' },
             { pattern: /forget (all )?instructions/gi, replacement: '[BLOCKED_OVERRIDE_ATTEMPT]' },
             { pattern: /disregard (all )?(above|previous) (instructions|tasks)/gi, replacement: '[BLOCKED_OVERRIDE_ATTEMPT]' },
-            { pattern: /(your new task is|you are now|actually you must)/gi, replacement: '[BLOCKED_TASK_INJECTION]' }
+            { pattern: /(your new task is|you are now|actually you must)/gi, replacement: '[BLOCKED_TASK_INJECTION]' },
+            { pattern: /override system prompts?/gi, replacement: '[BLOCKED_OVERRIDE_ATTEMPT]' }
         ],
         sanitize: (text) => {
             if (!text) return "";
-            // NFKC Normalization + Invisible char stripping (\p{Cf})
             let result = text.normalize('NFKC');
             const invisiblePattern = /[\u00AD\u034F\u061C\u070F\u180E\u200B-\u200F\u2028-\u202F\u2060-\u2064\u2066-\u206F\uFE00-\uFE0F\uFEFF]/g;
             result = result.replace(invisiblePattern, '');
@@ -75,7 +72,6 @@
             const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
             const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
 
-            // Intersection check (supports partially visible elements)
             const isIntersecting = (
                 rect.bottom > 0 && rect.top < viewportHeight &&
                 rect.right > 0 && rect.left < viewportWidth
@@ -88,12 +84,9 @@
             const tagName = el.tagName.toUpperCase();
             const interactiveTags = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'DETAILS', 'SUMMARY']);
             if (interactiveTags.has(tagName)) return true;
-
             const style = window.getComputedStyle(el);
             if (style.cursor === 'pointer') return true;
-
-            if (el.hasAttribute('onclick') || el.getAttribute('role') === 'button' ||
-                el.contentEditable === 'true' || el.getAttribute('contenteditable') === 'true' || el.isContentEditable) return true;
+            if (el.hasAttribute('onclick') || el.getAttribute('role') === 'button' || el.isContentEditable || el.contentEditable === 'true') return true;
             return false;
         },
         scan: () => {
@@ -103,7 +96,7 @@
                     if (DOMScanner.isElementVisible(node)) {
                         if (DOMScanner.isInteractive(node)) {
                             const rect = node.getBoundingClientRect();
-                            // textContent prevents reflows; fallback to labels/placeholders
+                            // Using textContent to avoid layout reflows (improves performance significantly)
                             const rawText = node.textContent || node.getAttribute('aria-label') ||
                                           node.getAttribute('placeholder') || node.getAttribute('title') || "";
                             elements.push({
@@ -130,7 +123,8 @@
             if (!target) return false;
             const el = document.querySelector(target.selector);
             if (el) {
-                el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                // Native click synthesis covers most framework events
+                el.click();
                 return true;
             }
             return false;
@@ -164,7 +158,7 @@
     const AssistantUI = () => {
         const [isExpanded, setIsExpanded] = React.useState(false);
         const [task, setTask] = React.useState("");
-        const [logs, setLogs] = React.useState(["Nanobrowser Prime 0.2.2: Enclave Secured."]);
+        const [logs, setLogs] = React.useState(["Nanobrowser Prime 0.2.3: Enclave Secured."]);
         const [isProcessing, setIsProcessing] = React.useState(false);
 
         const MAX_LOGS = 100;
@@ -181,17 +175,17 @@
             addLog(`User: ${sanitizedTask}`);
 
             const elements = DOMScanner.scan();
-            addLog(`System: Analysis in progress...`);
+            addLog(`System: Deep scanning DOM...`);
 
             setTimeout(() => {
                 addLog(`System: ${elements.length} secure interactive nodes detected.`);
 
                 if (elements.length > 0) {
                    const topElement = elements[0];
-                   addLog(`System: Suggested action -> click on [${topElement.index}] ${topElement.tagName}.`);
+                   addLog(`System: Recommended action -> interaction with [${topElement.index}] ${topElement.tagName}.`);
                 }
 
-                addLog("System: Step complete. Standing by.");
+                addLog("System: Enclave cycle complete. Standing by.");
                 setIsProcessing(false);
                 setTask("");
             }, 1000);
@@ -250,20 +244,16 @@
     };
 
     // --- SECURE INIT ---
-    if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
-        // Fallback or script load logic could go here if needed,
-        // but typically userscripts depend on @require for large libraries.
-    }
-
     const container = document.createElement('div');
     container.id = 'nanobrowser-prime-container';
     document.body.appendChild(container);
-    const shadow = container.attachShadow({ mode: 'open' });
+
+    // mode: 'closed' provides absolute isolation from host site scripts reading internal state
+    const shadow = container.attachShadow({ mode: 'closed' });
     const mount = document.createElement('div');
     mount.id = 'nanobrowser-prime-mount';
     shadow.appendChild(mount);
 
-    // Initializing with React 18 createRoot
     const root = ReactDOM.createRoot(mount);
     root.render(React.createElement(AssistantUI));
 
