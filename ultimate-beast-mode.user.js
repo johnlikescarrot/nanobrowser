@@ -28,7 +28,7 @@
         API_TIMEOUT: 30000,
         DEFAULT_MODELS: {
             openai: 'gpt-4o',
-            anthropic: 'claude-3-7-sonnet-latest',
+            anthropic: 'claude-sonnet-4-5',
             gemini: 'gemini-2.0-flash'
         },
         TAGS: {
@@ -47,7 +47,6 @@
     class Guardrails {
         static sanitize(content) {
             if (!content) return '';
-            // Prevent fake tags from influencing the model
             return content
                 .replace(new RegExp(CONFIG.TAGS.USER_REQUEST_START, 'gi'), '[REDACTED_REQUEST_TAG]')
                 .replace(new RegExp(CONFIG.TAGS.USER_REQUEST_END, 'gi'), '[REDACTED_REQUEST_TAG]')
@@ -163,7 +162,7 @@
                         }
                     },
                     ontimeout: () => reject(new Error('LLM API request timed out.')),
-                    onerror: (e) => reject(new Error(`Network error calling ${provider} API.`))
+                    onerror: (e) => reject(new Error(`Network error calling ${provider} API: ${e.statusText || 'Connection Failed'} (${e.status || 'unknown'})`))
                 });
             });
         }
@@ -201,8 +200,6 @@
                 case 'gemini': {
                     const systemPrompt = messages.find(m => m.role === 'system')?.content || '';
                     const rawHistory = messages.filter(m => m.role !== 'system');
-
-                    // Gemini requires strict role alternation (user -> model)
                     const contents = [];
                     rawHistory.forEach(m => {
                         const role = m.role === 'user' ? 'user' : 'model';
@@ -237,7 +234,7 @@
                 else if (provider === 'anthropic') content = data?.content?.[0]?.text;
                 else if (provider === 'gemini') content = data?.candidates?.[0]?.content?.parts?.[0]?.text;
             } catch (e) {
-                throw new Error(`Critical: Failed to extract content from ${provider} response. Structure may have changed.`);
+                throw new Error(`Critical: Failed to extract content from ${provider} response.`);
             }
 
             if (!content) {
@@ -253,7 +250,7 @@
             this.ui = ui;
             this.isRunning = false;
             this.isRestoring = false;
-            this.history = []; // Array of {role, content}
+            this.history = [];
             this.stepCount = 0;
             this.goal = '';
 
@@ -266,22 +263,23 @@
                 const saved = GM_getValue('beast_active_state');
                 if (saved) {
                     const state = JSON.parse(saved);
-                    debugLog('Restoring state from navigation...', state);
+                    debugLog('Restoring mission from navigation...', state);
                     this.goal = state.goal;
                     this.stepCount = state.stepCount;
                     this.history = state.history;
-
-                    // Clear state once read to prevent infinite loops on reload
                     GM_setValue('beast_active_state', null);
 
                     setTimeout(() => {
                         this.ui.log('RESUMING AUTONOMOUS MISSION...', 'system');
-                        this.run(this.goal, true);
+                        this.run(this.goal, true).finally(() => {
+                            this.isRestoring = false;
+                        });
                     }, 1000);
+                } else {
+                    this.isRestoring = false;
                 }
             } catch (e) {
                 console.error('Failed to restore state:', e);
-            } finally {
                 this.isRestoring = false;
             }
         }
@@ -298,12 +296,11 @@
                - input_text: {"index": number, "text": "string"}
                - scroll: {"direction": "up"|"down"}
                - navigate: {"url": "string"}
-               - done: {"answer": "final result"}
-            5. If you navigate, the page will reload and your state will be preserved.`;
+               - done: {"answer": "final result"}`;
         }
 
         async run(goal, isResuming = false) {
-            if ((this.isRunning || this.isRestoring) && !isResuming) return;
+            if ((this.isRunning || (this.isRestoring && !isResuming)) && !isResuming) return;
 
             this.isRunning = true;
             this.ui.setLoading(true);
@@ -338,14 +335,13 @@
                     const apiKey = GM_getValue(`beast_key_${provider}`, '');
                     const model = GM_getValue(`beast_model_${provider}`, CONFIG.DEFAULT_MODELS[provider]);
 
-                    if (!apiKey) throw new Error(`Missing API Key for ${provider}. Please configure in parameters.`);
+                    if (!apiKey) throw new Error(`Missing API Key for ${provider}.`);
 
                     const response = await BeastLLM.call(provider, model, apiKey, messages);
 
                     if (response.thought) this.ui.log(response.thought, 'beast');
 
-                    // Update history window
-                    this.history.push({ role: 'user', content: `Current snapshot submitted. Task: ${this.goal}` });
+                    this.history.push({ role: 'user', content: `Context submitted. Task: ${this.goal}` });
                     this.history.push({ role: 'assistant', content: JSON.stringify(response) });
                     if (this.history.length > CONFIG.MAX_HISTORY_MESSAGES * 2) {
                         this.history = this.history.slice(-CONFIG.MAX_HISTORY_MESSAGES * 2);
@@ -359,7 +355,7 @@
                     const actionResult = await this.performAction(response.action, response.args, elements);
 
                     if (actionResult === 'NAVIGATING') {
-                        this.isRunning = false; // Stop loop, page will reload
+                        this.isRunning = false;
                         return;
                     }
 
@@ -374,41 +370,56 @@
         }
 
         async performAction(name, args, elements) {
+            if (!args || typeof args !== 'object') {
+                this.ui.log(`ACTION FAILED: Missing arguments for ${name}`, 'system');
+                return 'FAILURE';
+            }
+
             debugLog(`Performing action: ${name}`, args);
 
             switch (name) {
                 case 'click_element': {
+                    if (typeof args.index === 'undefined') {
+                        this.ui.log('ACTION FAILED: Missing index for click.', 'system');
+                        return 'FAILURE';
+                    }
                     const el = elements.find(e => e.index === args.index);
                     if (el) {
                         el.element.click();
                         this.ui.log(`CLICKED: [${args.index}] ${el.text}`, 'system');
+                        return 'SUCCESS';
                     } else {
                         this.ui.log(`ACTION FAILED: Element [${args.index}] not found.`, 'system');
+                        return 'FAILURE';
                     }
-                    break;
                 }
                 case 'input_text': {
+                    if (typeof args.index === 'undefined' || typeof args.text === 'undefined') {
+                        this.ui.log('ACTION FAILED: Missing index or text for input.', 'system');
+                        return 'FAILURE';
+                    }
                     const el = elements.find(e => e.index === args.index);
                     if (el) {
                         el.element.value = args.text;
                         el.element.dispatchEvent(new Event('input', { bubbles: true }));
                         el.element.dispatchEvent(new Event('change', { bubbles: true }));
                         this.ui.log(`INPUT: "${args.text}" into [${args.index}]`, 'system');
+                        return 'SUCCESS';
                     } else {
                         this.ui.log(`ACTION FAILED: Input [${args.index}] not found.`, 'system');
+                        return 'FAILURE';
                     }
-                    break;
                 }
                 case 'scroll': {
-                    const amount = args.direction === 'up' ? -CONFIG.SCROLL_AMOUNT : CONFIG.SCROLL_AMOUNT;
+                    const direction = args.direction || 'down';
+                    const amount = direction === 'up' ? -CONFIG.SCROLL_AMOUNT : CONFIG.SCROLL_AMOUNT;
                     window.scrollBy(0, amount);
-                    this.ui.log(`SCROLLED ${args.direction.toUpperCase()}.`, 'system');
-                    break;
+                    this.ui.log(`SCROLLED ${direction.toUpperCase()}.`, 'system');
+                    return 'SUCCESS';
                 }
                 case 'navigate': {
-                    if (Guardrails.validateUrl(args.url)) {
+                    if (args.url && Guardrails.validateUrl(args.url)) {
                         this.ui.log(`NAVIGATING TO: ${args.url}...`, 'system');
-                        // Persist state for restoration
                         GM_setValue('beast_active_state', JSON.stringify({
                             goal: this.goal,
                             stepCount: this.stepCount,
@@ -417,12 +428,14 @@
                         window.location.href = args.url;
                         return 'NAVIGATING';
                     } else {
-                        this.ui.log(`SECURITY BLOCKED: Insecure URL "${args.url}"`, 'system');
+                        this.ui.log(`SECURITY BLOCKED: Insecure or missing URL`, 'system');
+                        return 'FAILURE';
                     }
-                    break;
                 }
+                default:
+                    this.ui.log(`UNKNOWN ACTION: ${name}`, 'system');
+                    return 'FAILURE';
             }
-            return 'SUCCESS';
         }
     }
 
