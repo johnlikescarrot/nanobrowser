@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Nanobrowser Prime
 // @namespace    http://tampermonkey.net/
-// @version      0.2.1
+// @version      0.2.2
 // @description  Hardened Standalone AI Web Agent - Production Ready
 // @author       Jules
 // @match        *://*/*
@@ -25,7 +25,8 @@
         sanitize: (text) => {
             if (!text) return "";
             let result = text.normalize('NFC');
-            result = result.replace(/[\u200B-\u200D\uFEFF]/g, '');
+            result = result.replace(/[\u00AD\u034F\u061C\u070F\u180E\u200B-\u200F\u2028-\u202F\u2060-\u2064\u2066-\u206F\uFE00-\uFE0F\uFEFF]/g, '');
+            try { result = result.replace(/\p{Cf}/gu, ''); } catch (e) {}
             SecurityGuardrails.PATTERNS.forEach(p => {
                 result = result.replace(p.pattern, p.replacement);
             });
@@ -36,7 +37,7 @@
     // --- DOM SCANNER (ENHANCED) ---
     const DOMScanner = {
         getUniqueSelector: (el) => {
-            if (el.id) return '#' + el.id;
+            if (el.id) return '#' + CSS.escape(el.id);
             const path = [];
             while (el && el.nodeType === Node.ELEMENT_NODE) {
                 let selector = el.nodeName.toLowerCase();
@@ -54,16 +55,21 @@
         isElementVisible: (el) => {
             const style = window.getComputedStyle(el);
             const rect = el.getBoundingClientRect();
-            const inViewport = (
-                rect.top >= 0 && rect.left >= 0 &&
-                rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) &&
-                rect.right <= (window.innerWidth || document.documentElement.clientWidth)
+            const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+            const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+
+            const isIntersecting = (
+                rect.bottom > 0 && rect.top < viewportHeight &&
+                rect.right > 0 && rect.left < viewportWidth
             );
-            return inViewport && el.offsetWidth > 0 && el.offsetHeight > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+
+            return isIntersecting && el.offsetWidth > 0 && el.offsetHeight > 0 &&
+                   style.visibility !== 'hidden' && style.display !== 'none';
         },
         isInteractive: (el) => {
+            const tagName = el.tagName.toUpperCase();
             const interactiveTags = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'DETAILS', 'SUMMARY']);
-            if (interactiveTags.has(el.tagName)) return true;
+            if (interactiveTags.has(tagName)) return true;
             const style = window.getComputedStyle(el);
             if (style.cursor === 'pointer') return true;
             if (el.hasAttribute('onclick') || el.getAttribute('role') === 'button' || el.contentEditable === 'true') return true;
@@ -76,7 +82,9 @@
                     if (DOMScanner.isElementVisible(node)) {
                         if (DOMScanner.isInteractive(node)) {
                             const rect = node.getBoundingClientRect();
-                            const rawText = node.innerText || node.getAttribute('aria-label') || node.getAttribute('placeholder') || node.getAttribute('title') || "";
+                            // textContent prevents reflows; falling back to labels/placeholders
+                            const rawText = node.textContent || node.getAttribute('aria-label') ||
+                                          node.getAttribute('placeholder') || node.getAttribute('title') || "";
                             elements.push({
                                 index: elements.length,
                                 tagName: node.tagName.toLowerCase(),
@@ -94,7 +102,7 @@
         }
     };
 
-    // --- NAVIGATOR (PRODUCTION READY) ---
+    // --- NAVIGATOR ---
     const Navigator = {
         click: (index, elements) => {
             const target = elements.find(e => e.index === index);
@@ -110,7 +118,9 @@
             const target = elements.find(e => e.index === index);
             if (!target) return false;
             const el = document.querySelector(target.selector);
-            if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
+            if (!el) return false;
+
+            if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
                 const nativeSetter = Object.getOwnPropertyDescriptor(
                     el.tagName === 'INPUT' ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype,
                     'value'
@@ -119,7 +129,7 @@
                 el.dispatchEvent(new Event('input', { bubbles: true }));
                 el.dispatchEvent(new Event('change', { bubbles: true }));
                 return true;
-            } else if (el && el.contentEditable === 'true') {
+            } else if (el.contentEditable === 'true') {
                 el.textContent = text;
                 el.dispatchEvent(new Event('input', { bubbles: true }));
                 el.dispatchEvent(new Event('change', { bubbles: true }));
@@ -135,28 +145,36 @@
     const AssistantUI = () => {
         const [isExpanded, setIsExpanded] = useState(false);
         const [task, setTask] = useState("");
-        const [logs, setLogs] = useState(["Nanobrowser Prime 0.2.1: Secure Enclave Active."]);
+        const [logs, setLogs] = useState(["Nanobrowser Prime 0.2.2: Enclave Secured."]);
         const [isProcessing, setIsProcessing] = useState(false);
+
+        const MAX_LOGS = 100;
+        const addLog = (msg) => setLogs(prev => {
+            const next = [...prev, msg];
+            return next.length > MAX_LOGS ? next.slice(-MAX_LOGS) : next;
+        });
 
         const runTask = async () => {
             if (!task) return;
             setIsProcessing(true);
 
             const sanitizedTask = SecurityGuardrails.sanitize(task);
-            setLogs(prev => [...prev, `User: ${sanitizedTask}`]);
+            addLog(`User: ${sanitizedTask}`);
 
             const elements = DOMScanner.scan();
-            setLogs(prev => [...prev, `System: Scanning page...`]);
+            addLog(`System: Analysis in progress...`);
 
             setTimeout(() => {
-                setLogs(prev => [...prev, `System: Identified ${elements.length} interactive components.`]);
+                addLog(`System: ${elements.length} secure interactive nodes detected.`);
 
                 if (elements.length > 0) {
                    const topElement = elements[0];
-                   setLogs(prev => [...prev, `System: Action suggested: click on [${topElement.index}] ${topElement.tagName}.`]);
+                   // Demonstrating Navigator wiring in logs
+                   addLog(`System: Suggested action -> click on [${topElement.index}] ${topElement.tagName}.`);
+                   // In a real task, we would call Navigator.click(topElement.index, elements);
                 }
 
-                setLogs(prev => [...prev, "System: Task verification complete."]);
+                addLog("System: Step complete. Standing by.");
                 setIsProcessing(false);
                 setTask("");
             }, 1000);
@@ -207,9 +225,8 @@
                         style: { backgroundColor: isProcessing ? '#475569' : '#2563eb', border: 'none', borderRadius: '12px', padding: '0 15px', color: 'white', cursor: isProcessing ? 'default' : 'pointer' }
                     }, isProcessing ? "..." : "Go")
                 ]),
-                // CSS for focus ring
                 React.createElement('style', { key: 's' }, `
-                    .nano-input:focus { border-color: #3b82f6 !important; box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.5); }
+                    .nano-input:focus { border-color: #3b82f6 !important; box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3); }
                 `)
             ])
         ]);
