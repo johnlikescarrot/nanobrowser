@@ -45,6 +45,7 @@
         if (CONFIG.DEBUG) console.log(`%c[BEAST DEBUG]%c ${msg}`, 'color: #19c2ff; font-weight: bold', 'color: inherit', ...args);
     };
 
+    debugLog('Initializing Guardrails...');
     class Guardrails {
         static sanitize(content) {
             if (!content) return '';
@@ -147,7 +148,7 @@
                         } catch (e) { reject(new Error(`LLM Failure: ${e.message}`)); }
                     },
                     ontimeout: () => reject(new Error('Neural Link Timeout')),
-                    onerror: (e) => reject(new Error('Neural Gateway Failed'))
+                    onerror: (e) => reject(new Error(`Neural Gateway Failed: ${e.statusText || 'Connection Error'}`))
                 });
             });
         }
@@ -239,7 +240,7 @@
             const meta = {
                 tag: target.tagName.toLowerCase(),
                 id: target.id ? `#${target.id}` : '',
-                class: target.className ? `.${target.className.split(' ').join('.')}` : '',
+                class: (typeof target.className === 'string' ? target.className : '').split(/\s+/).filter(Boolean).map(c => `.${c}`).join(''),
                 text: target.innerText?.trim().substring(0, 30) || target.value?.substring(0, 30)
             };
 
@@ -319,7 +320,7 @@
                     this.history.push({ role: 'assistant', content: JSON.stringify(response) });
                     if (this.history.length > CONFIG.MAX_HISTORY_MESSAGES * 2) this.history = this.history.slice(-(CONFIG.MAX_HISTORY_MESSAGES * 2));
 
-                    if (response.action === 'done') { this.ui.log(`MISSION COMPLETE: ${response.args?.answer}`, 'system'); break; }
+                    if (response.action === 'done') { this.ui.triggerMissionComplete(); this.ui.log(`MISSION COMPLETE: ${response.args?.answer}`, 'system'); break; }
                     if (await this.performAction(response.action, response.args, elements) === 'NAVIGATING') { this.isRunning = false; return; }
                     await new Promise(r => setTimeout(r, CONFIG.WAIT_BETWEEN_STEPS));
                 }
@@ -594,6 +595,7 @@
                 document.removeEventListener('mouseup', onMouseUp);
             };
             h.addEventListener('mousedown', (e) => {
+                el.style.right = 'auto'; el.style.bottom = 'auto';
                 startX = e.clientX; startY = e.clientY;
                 document.addEventListener('mousemove', onMouseMove);
                 document.addEventListener('mouseup', onMouseUp);
