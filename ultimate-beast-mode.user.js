@@ -101,7 +101,7 @@
             });
 
             let node;
-            while (node = walker.nextNode()) {
+            while ((node = walker.nextNode()) !== null) {
                 const attrs = {};
                 for (const attr of node.attributes) attrs[attr.name] = attr.value;
                 const text = node.innerText?.trim() || node.value || node.placeholder || node.getAttribute('aria-label') || '';
@@ -303,7 +303,7 @@
                     this.stepCount++;
                     this.ui.showScan();
                     const elements = BeastBrowser.getSnapshot(this.seenHashes);
-                    elements.forEach(el => this.seenHashes.add(el.hash));
+                    elements.forEach(el => { this.seenHashes.add(el.hash); });
                     const libs = BeastBrowser.detectLibraries();
                     const contextMessage = `LOCATION: ${window.location.href}\nLIBRARIES: ${libs}\n\nVISUAL BUFFER:\n${Guardrails.wrapUntrusted(BeastBrowser.elementsToString(elements))}\n\nDIRECTIVE: ${Guardrails.wrapRequest(this.goal)}\n\nIMPORTANT: Output valid JSON ONLY. Start with { and end with }.`;
                     const messages = [{ role: 'system', content: this.getSystemPrompt() }, ...this.history, { role: 'user', content: contextMessage }];
@@ -603,8 +603,20 @@
 
     function init() {
         if (window.self !== window.top) return;
-        const ui = new BeastUI(), agent = new BeastAgent(ui);
-        ui.onClose = () => { agent.isRunning = false; };
+        const ui = new BeastUI(), agent = new BeastAgent(ui), recorder = new BeastRecorder(ui);
+        ui.onClose = () => { agent.isRunning = false; recorder.stop(); };
+
+        let recording = false;
+        ui.shadow.querySelector('#record-btn').onclick = () => {
+            recording = !recording;
+            if (recording) {
+                recorder.start();
+                ui.shadow.querySelector('#record-btn').style.color = '#ef4444';
+            } else {
+                recorder.stop();
+                ui.shadow.querySelector('#record-btn').style.color = '#19c2ff';
+            }
+        };
 
         const input = ui.shadow.querySelector('#goal-input');
         const execute = () => {
